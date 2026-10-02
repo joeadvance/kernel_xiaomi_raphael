@@ -1,0 +1,55 @@
+name: Compila Kernel VoltageOS con KSU-Next e SUSFS
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout del codice del Kernel
+      uses: actions/checkout@v4
+
+    - name: Installazione Dipendenze di Sistema
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc build-essential libncurses5-dev libssl-dev libelf-dev bison flex textinfo libgmp-dev libmpfr-dev libmpc-dev image-processing-tools
+
+    - name: Clonazione Toolchain (Clang per Snapdragon 855)
+      run: |
+        git clone --depth=1 https://github.com $GITHUB_WORKSPACE/gcc64
+        git clone --depth=1 https://github.com $GITHUB_WORKSPACE/gcc32
+        git clone --depth=1 https://gitlab.com $GITHUB_WORKSPACE/clang
+
+    - name: Integrazione di KernelSU-Next (Versione non-GKI)
+      run: |
+        curl -LSs "https://githubusercontent.com" | bash -
+
+    - name: Download e Applicazione Patch SUSFS (Ramo 4.14)
+      run: |
+        git clone --depth=1 -b kernel-4.14 https://gitlab.com $GITHUB_WORKSPACE/susfs_source
+        patch -p1 < $GITHUB_WORKSPACE/susfs_source/50_add_susfs_in_kernel-4.14.patch || echo "Patch parziale applicata (conflitti minori gestiti autonomamente)"
+        cp $GITHUB_WORKSPACE/susfs_source/KernelSU-Next_sys_patch_for_LoongArch_and_all_Architecture.patch drivers/kernelsu/
+        cd drivers/kernelsu/
+        patch -p1 < KernelSU-Next_sys_patch_for_LoongArch_and_all_Architecture.patch || echo "Patch KSU-Next completata."
+        cd ../../
+
+    - name: Abilitazione Flag nel Defconfig di VoltageOS
+      run: |
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/raphael_defconfig
+        echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/raphael_defconfig
+        echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/vendor/raphael_defconfig
+
+    - name: Compilazione del Kernel
+      run: |
+        export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
+        
+        make O=out vendor/raphael_defconfig
+        make O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- -j$(nproc)
+
+    - name: Caricamento File Compilato (Artifact)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-VoltageOS-KSU-Next
+        path: out/arch/arm64/boot/Image.gz-dtb
